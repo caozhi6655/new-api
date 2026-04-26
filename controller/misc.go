@@ -299,6 +299,48 @@ func SendEmailVerification(c *gin.Context) {
 	return
 }
 
+// SendEmailLoginCode 给已注册邮箱发送 6 位登录验证码（免密登录）
+func SendEmailLoginCode(c *gin.Context) {
+	if !common.EmailVerificationEnabled {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "管理员未开启邮箱验证",
+		})
+		return
+	}
+	email := c.Query("email")
+	if err := common.Validate.Var(email, "required,email"); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "无效的参数",
+		})
+		return
+	}
+	// 仅对已注册邮箱发送，避免被用作邮箱探测器；同时统一返回成功，防枚举
+	if !model.IsEmailAlreadyTaken(email) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+		})
+		return
+	}
+	code := common.GenerateVerificationCode(6)
+	common.RegisterVerificationCodeWithKey(email, code, common.EmailLoginPurpose)
+	subject := fmt.Sprintf("%s 登录验证码", common.SystemName)
+	content := fmt.Sprintf("<p>您好，您正在登录 %s。</p>"+
+		"<p>您的登录验证码为: <strong>%s</strong></p>"+
+		"<p>验证码 %d 分钟内有效，如果不是本人操作，请忽略本邮件并尽快修改密码。</p>",
+		common.SystemName, code, common.VerificationValidMinutes)
+	if err := common.SendEmail(subject, email, content); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+}
+
 func SendPasswordResetEmail(c *gin.Context) {
 	email := c.Query("email")
 	if err := common.Validate.Var(email, "required,email"); err != nil {

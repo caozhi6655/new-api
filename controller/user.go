@@ -116,6 +116,65 @@ func setupLogin(user *model.User, c *gin.Context) {
 	})
 }
 
+type EmailCodeLoginRequest struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+
+// EmailCodeLogin 邮箱 + 验证码 免密登录
+func EmailCodeLogin(c *gin.Context) {
+	if !common.EmailVerificationEnabled {
+		common.ApiErrorI18n(c, i18n.MsgUserPasswordLoginDisabled)
+		return
+	}
+	var req EmailCodeLoginRequest
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	code := strings.TrimSpace(req.Code)
+	if email == "" || code == "" {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	if !common.VerifyCodeWithKey(email, code, common.EmailLoginPurpose) {
+		common.ApiErrorI18n(c, i18n.MsgUserVerificationCodeError)
+		return
+	}
+	user := model.User{Email: email}
+	if err := user.FillUserByEmail(); err != nil || user.Id == 0 {
+		common.ApiErrorI18n(c, i18n.MsgUserUsernameOrPasswordError)
+		return
+	}
+	if user.Status != common.UserStatusEnabled {
+		common.ApiErrorI18n(c, i18n.MsgUserUsernameOrPasswordError)
+		return
+	}
+	// 验证码一次性使用
+	common.DeleteKey(email, common.EmailLoginPurpose)
+
+	// 复用现有 2FA 流程
+	if model.IsTwoFAEnabled(user.Id) {
+		session := sessions.Default(c)
+		session.Set("pending_username", user.Username)
+		session.Set("pending_user_id", user.Id)
+		if err := session.Save(); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgUserSessionSaveFailed)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": i18n.T(c, i18n.MsgUserRequire2FA),
+			"success": true,
+			"data": map[string]interface{}{
+				"require_2fa": true,
+			},
+		})
+		return
+	}
+	setupLogin(&user, c)
+}
+
 func Logout(c *gin.Context) {
 	session := sessions.Default(c)
 	session.Clear()

@@ -79,8 +79,14 @@ const LoginForm = () => {
     username: '',
     password: '',
     wechat_verification_code: '',
+    email_for_code: '',
+    email_login_code: '',
   });
   const { username, password } = inputs;
+  const [loginMode, setLoginMode] = useState('password'); // 'password' | 'emailCode'
+  const [emailCodeSending, setEmailCodeSending] = useState(false);
+  const [emailCodeCountdown, setEmailCodeCountdown] = useState(0);
+  const [emailCodeLoginLoading, setEmailCodeLoginLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const [submitted, setSubmitted] = useState(false);
   const [userState, userDispatch] = useContext(UserContext);
@@ -266,6 +272,83 @@ const LoginForm = () => {
       showError('登录失败，请重试');
     } finally {
       setLoginLoading(false);
+    }
+  }
+
+  // 邮箱验证码登录：发送验证码（带 60 秒倒计时）
+  useEffect(() => {
+    if (emailCodeCountdown <= 0) return;
+    const timer = setTimeout(
+      () => setEmailCodeCountdown((v) => v - 1),
+      1000,
+    );
+    return () => clearTimeout(timer);
+  }, [emailCodeCountdown]);
+
+  async function handleSendEmailLoginCode() {
+    const email = inputs.email_for_code?.trim();
+    if (!email) {
+      showError(t('请输入邮箱地址'));
+      return;
+    }
+    if (turnstileEnabled && turnstileToken === '') {
+      showInfo(t('请稍后几秒重试，Turnstile 正在检查用户环境！'));
+      return;
+    }
+    setEmailCodeSending(true);
+    try {
+      const res = await API.get(
+        `/api/email_login_code?email=${encodeURIComponent(email)}&turnstile=${turnstileToken}`,
+      );
+      const { success, message } = res.data;
+      if (success) {
+        showSuccess(t('验证码已发送，请查收邮箱'));
+        setEmailCodeCountdown(60);
+      } else {
+        showError(message);
+      }
+    } catch (err) {
+      showError(t('发送验证码失败，请稍后再试'));
+    } finally {
+      setEmailCodeSending(false);
+    }
+  }
+
+  async function handleEmailCodeLogin() {
+    if ((hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms) {
+      showInfo(t('请先阅读并同意用户协议和隐私政策'));
+      return;
+    }
+    const email = inputs.email_for_code?.trim();
+    const code = inputs.email_login_code?.trim();
+    if (!email || !code) {
+      showError(t('请填写邮箱与验证码'));
+      return;
+    }
+    setEmailCodeLoginLoading(true);
+    try {
+      const res = await API.post(
+        `/api/user/login/email_code?turnstile=${turnstileToken}`,
+        { email, code },
+      );
+      const { success, message, data } = res.data;
+      if (success) {
+        if (data && data.require_2fa) {
+          setShowTwoFA(true);
+          return;
+        }
+        userDispatch({ type: 'login', payload: data });
+        setUserData(data);
+        updateAPI();
+        showSuccess(t('登录成功！'));
+        navigate('/console');
+      } else {
+        showError(message);
+      }
+    } catch (err) {
+      showError(t('登录失败，请重试'));
+    } finally {
+      setEmailCodeLoginLoading(false);
     }
   }
 
@@ -744,25 +827,86 @@ const LoginForm = () => {
                   <span className='ml-3'>{t('使用 Passkey 登录')}</span>
                 </Button>
               )}
-              <Form className='space-y-3'>
-                <Form.Input
-                  field='username'
-                  label={t('用户名或邮箱')}
-                  placeholder={t('请输入您的用户名或邮箱地址')}
-                  name='username'
-                  onChange={(value) => handleChange('username', value)}
-                  prefix={<IconMail />}
-                />
+              {/* 登录方式切换：密码 / 邮箱验证码 */}
+              <div className='flex items-center justify-center gap-6 mb-2 text-sm'>
+                <a
+                  className={`cursor-pointer ${loginMode === 'password' ? 'font-semibold text-blue-600 underline' : 'text-gray-500'}`}
+                  onClick={() => setLoginMode('password')}
+                >
+                  {t('密码登录')}
+                </a>
+                <a
+                  className={`cursor-pointer ${loginMode === 'emailCode' ? 'font-semibold text-blue-600 underline' : 'text-gray-500'}`}
+                  onClick={() => setLoginMode('emailCode')}
+                >
+                  {t('邮箱验证码登录')}
+                </a>
+              </div>
 
-                <Form.Input
-                  field='password'
-                  label={t('密码')}
-                  placeholder={t('请输入您的密码')}
-                  name='password'
-                  mode='password'
-                  onChange={(value) => handleChange('password', value)}
-                  prefix={<IconLock />}
-                />
+              <Form className='space-y-3'>
+                {loginMode === 'password' && (
+                  <>
+                    <Form.Input
+                      field='username'
+                      label={t('用户名或邮箱')}
+                      placeholder={t('请输入您的用户名或邮箱地址')}
+                      name='username'
+                      onChange={(value) => handleChange('username', value)}
+                      prefix={<IconMail />}
+                    />
+
+                    <Form.Input
+                      field='password'
+                      label={t('密码')}
+                      placeholder={t('请输入您的密码')}
+                      name='password'
+                      mode='password'
+                      onChange={(value) => handleChange('password', value)}
+                      prefix={<IconLock />}
+                    />
+                  </>
+                )}
+
+                {loginMode === 'emailCode' && (
+                  <>
+                    <Form.Input
+                      field='email_for_code'
+                      label={t('邮箱')}
+                      placeholder={t('请输入您注册时使用的邮箱')}
+                      name='email_for_code'
+                      onChange={(value) => handleChange('email_for_code', value)}
+                      prefix={<IconMail />}
+                    />
+                    <div className='flex items-stretch gap-2'>
+                      <div className='flex-1'>
+                        <Form.Input
+                          field='email_login_code'
+                          label={t('验证码')}
+                          placeholder={t('请输入 6 位邮箱验证码')}
+                          name='email_login_code'
+                          onChange={(value) =>
+                            handleChange('email_login_code', value)
+                          }
+                          prefix={<IconKey />}
+                        />
+                      </div>
+                      <div className='flex items-end pb-1'>
+                        <Button
+                          theme='outline'
+                          type='primary'
+                          className='!rounded-full whitespace-nowrap'
+                          onClick={handleSendEmailLoginCode}
+                          loading={emailCodeSending}
+                          disabled={emailCodeCountdown > 0}
+                        >
+                          {emailCodeCountdown > 0
+                            ? `${emailCodeCountdown}s`
+                            : t('获取验证码')}
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 {(hasUserAgreement || hasPrivacyPolicy) && (
                   <div className='pt-4'>
@@ -803,19 +947,34 @@ const LoginForm = () => {
                 )}
 
                 <div className='space-y-2 pt-2'>
-                  <Button
-                    theme='solid'
-                    className='w-full !rounded-full'
-                    type='primary'
-                    htmlType='submit'
-                    onClick={handleSubmit}
-                    loading={loginLoading}
-                    disabled={
-                      (hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms
-                    }
-                  >
-                    {t('继续')}
-                  </Button>
+                  {loginMode === 'password' ? (
+                    <Button
+                      theme='solid'
+                      className='w-full !rounded-full'
+                      type='primary'
+                      htmlType='submit'
+                      onClick={handleSubmit}
+                      loading={loginLoading}
+                      disabled={
+                        (hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms
+                      }
+                    >
+                      {t('继续')}
+                    </Button>
+                  ) : (
+                    <Button
+                      theme='solid'
+                      className='w-full !rounded-full'
+                      type='primary'
+                      onClick={handleEmailCodeLogin}
+                      loading={emailCodeLoginLoading}
+                      disabled={
+                        (hasUserAgreement || hasPrivacyPolicy) && !agreedToTerms
+                      }
+                    >
+                      {t('登录')}
+                    </Button>
+                  )}
 
                   <Button
                     theme='borderless'
